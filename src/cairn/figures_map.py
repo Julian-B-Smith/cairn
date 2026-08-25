@@ -473,7 +473,7 @@ def apply_adjudications(manifest: dict, fig_dir: str | Path) -> dict:
         # called "6" onto that sheet. One log, several target kinds, and each consumer
         # must read only its own.
         if a.target_kind != "figure-numeral":
-            continue
+            continue    # interpretive rulings are folded in below (D84)
         page = by_page.get(a.target.get("page"))
         if page is None:
             continue
@@ -500,7 +500,11 @@ def apply_adjudications(manifest: dict, fig_dir: str | Path) -> dict:
             "x": src.get("x", a.target.get("x")), "y": src.get("y", a.target.get("y")),
             "w": src.get("w", 0.02), "h": src.get("h", 0.02),
         })
-    return manifest
+
+    # Interpretive rulings (D77) reshape the same view: a reviewer who settled
+    # "12 or 72?" by reading the sheet must see the sheet change.
+    from .ambiguity import apply_to_manifest
+    return apply_to_manifest(manifest, judgments)
 
 
 def fig_to_sheets(manifest: dict, known_figs: list[str]) -> list[SheetAssignment]:

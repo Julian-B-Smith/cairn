@@ -163,3 +163,83 @@ def test_the_pane_says_out_loud_when_there_is_no_recommendation():
     html = _ambiguities(ocr_conflict(cov))
     assert "no recommendation here" in html
     assert "inventing confidence" in html
+
+
+def _resolution(tmp_path, amb_id, page, readings, bbox, chosen):
+    from cairn.adjudication import Adjudication, AdjudicationLog
+    from cairn.ambiguity import TARGET_KIND
+    log = AdjudicationLog(tmp_path / "adjudications.jsonl")
+    log.append(Adjudication(
+        adj_id=f"{amb_id}::correct::2026-08-18", kind="correct", target_kind=TARGET_KIND,
+        target={"amb_id": amb_id, "page": page, "readings": readings, "bbox": bbox},
+        value={"reading": chosen}, by="J. Smith", on="2026-08-18"))
+    return log
+
+
+def test_resolving_a_conflict_reshapes_the_sheet(tmp_path):
+    """D84: a ruling that changes nothing downstream is one the reviewer stops making.
+
+    Reading the sheet to settle "is this 12 or 72?" is the most expensive evidence in
+    the system — a human looked — and it used to move a row out of a queue and nothing
+    else, while the drawings went on showing both readings.
+    """
+    from cairn.figures_map import apply_adjudications
+
+    _resolution(tmp_path, "ocr_conflict:p6:12-72", 6, ["12", "72"],
+                [0.4115, 0.6032, 0.038, 0.021], "72")
+    man = {"pages": [{"page": 6, "numerals": [
+        {"numeral": "72", "x": 0.4115, "y": 0.6032, "w": .03, "h": .02, "confidence": 1.0},
+        {"numeral": "12", "x": 0.4190, "y": 0.6086, "w": .03, "h": .02, "confidence": 0.06},
+    ]}]}
+    left = apply_adjudications(man, tmp_path)["pages"][0]["numerals"]
+    assert [str(n["numeral"]) for n in left] == ["72"]
+    kept = left[0]
+    assert kept["method"] == "human" and kept["confidence"] == 1.0
+    assert kept["by"] == "J. Smith", "a person settled it; provenance must say so"
+
+
+def test_a_ruling_spares_the_same_label_elsewhere_on_the_sheet(tmp_path):
+    """Identity is label PLUS position. Sheet 8 carries a second "92" half a page from
+    the disputed mark; a ruling about one must not delete the other. (Checking by label
+    alone reported this as a failed ruling three times before the check was fixed —
+    the same coarse-instrument error D69 and D81 each hit.)"""
+    from cairn.figures_map import apply_adjudications
+
+    _resolution(tmp_path, "ocr_conflict:p8:52-92", 8, ["52", "92"],
+                [0.2281, 0.6105, 0.03, 0.02], "52")
+    man = {"pages": [{"page": 8, "numerals": [
+        {"numeral": "52", "x": 0.2281, "y": 0.6105, "w": .03, "h": .02, "confidence": 0.9},
+        {"numeral": "92", "x": 0.2310, "y": 0.6112, "w": .03, "h": .02, "confidence": 0.8},
+        {"numeral": "92", "x": 0.8124, "y": 0.6279, "w": .03, "h": .02, "confidence": 1.0},
+    ]}]}
+    left = apply_adjudications(man, tmp_path)["pages"][0]["numerals"]
+    far = [n for n in left if str(n["numeral"]) == "92"]
+    assert len(far) == 1 and far[0]["x"] == 0.8124, "the undisputed twin must survive"
+    assert not [n for n in left if str(n["numeral"]) == "92" and n["x"] < 0.5]
+
+
+def test_neither_drops_both_readings(tmp_path):
+    """"Neither" is the reviewer saying the ink is something else again — keeping the
+    higher-confidence guess would be the machine overruling them."""
+    from cairn.figures_map import apply_adjudications
+
+    _resolution(tmp_path, "ocr_conflict:p6:36-56", 6, ["36", "56"],
+                [0.5, 0.5, 0.03, 0.02], "neither")
+    man = {"pages": [{"page": 6, "numerals": [
+        {"numeral": "36", "x": 0.5, "y": 0.5, "w": .03, "h": .02, "confidence": 0.7},
+        {"numeral": "56", "x": 0.502, "y": 0.501, "w": .03, "h": .02, "confidence": 0.6},
+    ]}]}
+    assert apply_adjudications(man, tmp_path)["pages"][0]["numerals"] == []
+
+
+def test_only_ocr_conflicts_touch_marks(tmp_path):
+    """A `numeral_sense` ruling is about the TEXT and a `figure_guess` about an
+    assignment; neither is about a mark, and acting on one here would edit a sheet on
+    the strength of an assertion nobody made about it."""
+    from cairn.figures_map import apply_adjudications
+
+    _resolution(tmp_path, "numeral_sense:20", 2, ["20"], [0.5, 0.5, .03, .02],
+                "measurement only")
+    man = {"pages": [{"page": 2, "numerals": [
+        {"numeral": "20", "x": 0.5, "y": 0.5, "w": .03, "h": .02, "confidence": 0.9}]}]}
+    assert len(apply_adjudications(man, tmp_path)["pages"][0]["numerals"]) == 1
