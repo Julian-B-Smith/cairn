@@ -37,6 +37,26 @@ from cairn.review_queue import build as build_queue
 ROOT = Path(__file__).resolve().parent.parent
 
 
+def _text_numerals(text: str, adj_path: Path) -> list:
+    """Reference numerals the TEXT recites, minus any the reviewer ruled are not parts.
+
+    The feedback path for `numeral_sense` (D84). "20 is a measurement here, never the
+    scrubber" has to remove 20 from the legend and from the drawing/spec reconciliation,
+    not merely stop the overlay lighting it — otherwise the reconciliation goes on
+    reporting a numeral the reviewer has said does not exist, and the ruling reads as
+    having done nothing.
+    """
+    from cairn.adjudication import AdjudicationLog
+    from cairn.ambiguity import excluded_numerals, resolutions
+    from cairn.patents import reference_numerals
+
+    nums = reference_numerals(text)
+    if not adj_path.exists():
+        return nums
+    drop = excluded_numerals(resolutions(AdjudicationLog(adj_path)))
+    return [n for n in nums if str(n.number) not in drop]
+
+
 def _ambiguities_for(store_dir: Path, doc_id: str, adj_path: Path) -> list:
     """Open questions of MEANING (D77) — where two mechanisms disagree about a token.
 
@@ -52,12 +72,7 @@ def _ambiguities_for(store_dir: Path, doc_id: str, adj_path: Path) -> list:
         numeral_coverage,
         numeral_sightings,
     )
-    from cairn.patents import (
-        figure_references,
-        numeral_mentions,
-        parse_figures,
-        reference_numerals,
-    )
+    from cairn.patents import figure_references, numeral_mentions, parse_figures
     from cairn.spans import SpanStore
 
     store = SpanStore.from_store(DocumentStore(store_dir))
@@ -65,7 +80,7 @@ def _ambiguities_for(store_dir: Path, doc_id: str, adj_path: Path) -> list:
     manifest = load_manifest(store_dir)
     sightings = numeral_sightings(manifest)
     assigns = fig_to_sheets(manifest, [f.number for f in parse_figures(text)])
-    cov = numeral_coverage(reference_numerals(text), text, figure_references(text),
+    cov = numeral_coverage(_text_numerals(text, adj_path), text, figure_references(text),
                            assigns, sightings)
     log = AdjudicationLog(adj_path)
     done = set(resolutions(log)) if adj_path.exists() else set()
@@ -73,7 +88,8 @@ def _ambiguities_for(store_dir: Path, doc_id: str, adj_path: Path) -> list:
                    assignments=assigns, resolved=done)
 
 
-def _queue_for(store_dir: Path, doc_id: str, adjudicated: set[str]) -> list:
+def _queue_for(store_dir: Path, doc_id: str, adjudicated: set[str],
+               adj_path: Path | None = None) -> list:
     """The outstanding worklist, from the same reconciliation the Drawings pane shows."""
     from cairn.figures_map import (
         fig_to_sheets,
@@ -90,8 +106,8 @@ def _queue_for(store_dir: Path, doc_id: str, adjudicated: set[str]) -> list:
     sightings = numeral_sightings(manifest)
     figs = parse_figures(text)
     assignments = fig_to_sheets(manifest, [f.number for f in figs])
-    cov = numeral_coverage(reference_numerals(text), text, figure_references(text),
-                           assignments, sightings)
+    nums = _text_numerals(text, adj_path) if adj_path else reference_numerals(text)
+    cov = numeral_coverage(nums, text, figure_references(text), assignments, sightings)
     return build_queue(cov, sightings, adjudicated=adjudicated)
 
 
@@ -169,7 +185,7 @@ def main() -> int:
     queue = []
     if ok_figures:
         try:
-            queue = _queue_for(store_dir, ns.doc, adj_ids)
+            queue = _queue_for(store_dir, ns.doc, adj_ids, adj_path)
             ambiguities = _ambiguities_for(store_dir, ns.doc, adj_path)
         except Exception as e:                    # noqa: BLE001 — reported, not fatal
             print(f"  ✗ review queue: {type(e).__name__}: {e}")

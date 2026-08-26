@@ -278,3 +278,58 @@ def collect(*, text: str = "", mentions=(), coverage=None, assignments=(),
         found += figure_guess(assignments)
     return sorted((a for a in found if a.amb_id not in done),
                   key=lambda a: (a.rank, len(a.label), a.label))
+
+
+def apply_to_manifest(manifest: dict, judgments) -> dict:
+    """Fold interpretive rulings into the manifest view — the feedback half (D84).
+
+    A ruling that changes nothing downstream is a ruling the reviewer stops making.
+    Resolving "is this mark 12 or 72?" by reading the sheet is the most expensive
+    evidence in the system — a human looked — and until this, it moved a row out of a
+    queue and nothing else: the drawings, the reconciliation and the figure overlay all
+    went on showing both readings.
+
+    Only `ocr_conflict` touches marks, because it is the only kind that is ABOUT a mark.
+    A resolved conflict keeps the chosen reading at the disputed spot and drops the
+    rejected one; `neither` drops both, which is the reviewer saying the ink is
+    something else again. The survivor is restamped as human-confirmed, so provenance
+    shows a person settled it rather than an engine winning on confidence.
+
+    `numeral_sense` and `element_phrase` are about the TEXT and are applied on that
+    side (`excluded_numerals`); `figure_guess` is about an assignment, not a mark.
+    """
+    by_page = {p["page"]: p for p in manifest["pages"]}
+    for a in judgments:
+        if a.target_kind != TARGET_KIND:
+            continue
+        amb_id = a.target.get("amb_id", "")
+        if not amb_id.startswith(f"{OCR_CONFLICT}:"):
+            continue
+        page = by_page.get(a.target.get("page"))
+        readings = {str(r) for r in (a.target.get("readings") or [])}
+        chosen = (a.value or {}).get("reading")
+        if page is None or not readings or not chosen:
+            continue
+        bbox = a.target.get("bbox") or []
+        x, y = (bbox + [None, None])[:2]
+        kept: list[dict] = []
+        for n in page["numerals"]:
+            disputed = (
+                str(n["numeral"]) in readings
+                and (x is None or (abs(n["x"] - x) < _CONFLICT_RADIUS
+                                   and abs(n["y"] - y) < _CONFLICT_RADIUS)))
+            if not disputed:
+                kept.append(n)
+            elif str(n["numeral"]) == chosen:
+                kept.append({**n, "confidence": 1.0, "method": "human",
+                             "source_text": f"reviewer read this mark as {chosen}",
+                             "adjudication": a.adj_id, "by": a.by, "on": a.on})
+        page["numerals"] = kept
+    return manifest
+
+
+# Wider than `_MARK_RADIUS`: the two readings of ONE mark are boxed by different
+# engines and their corners disagree by more than a same-label merge would (12 vs 72
+# on sheet 6 sit 0.0075 apart in x, but 34 vs 54 sit 0.047 apart because one engine
+# boxed the leader line too). Too tight and the ruling misses the mark it settled.
+_CONFLICT_RADIUS = 0.06

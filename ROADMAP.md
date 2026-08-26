@@ -379,3 +379,4 @@ API-wrapped service with **inline entailment-gating** (the structural-intercepti
 - 2026-08-15 · D81 · locate becomes a search box; removed marks shown as ghosts; hidden-attribute fix; pane survives refresh.
 - 2026-08-18 · D82 · stemming measured (2/13 patent, 1/9 golden) and declined; the gap is vocabulary, not morphology.
 - 2026-08-18 · D83 · lint_question — a deterministic pre-flight check on the question, flagging never rewriting.
+- 2026-08-18 · D84 · interpretive rulings reshape the manifest and the text side, not just the queue.
