@@ -31,7 +31,7 @@ The shape of the fix, and its boundary:
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 # Ambiguity kinds, most consequential first — the same ranking discipline the review
 # queue uses, and for the same reason: a list not ordered by cost is read top-down and
@@ -130,6 +130,34 @@ def numeral_sense(text: str, mentions) -> list[Ambiguity]:
     return out
 
 
+def _joined(lead: str, tail: str) -> str:
+    """Two sentences, joined without running together. The upstream message does not end
+    in punctuation, so appending to it produced "must read the sheet This is the mark"."""
+    lead = lead.rstrip()
+    if not tail:
+        return lead
+    sep = " " if lead.endswith((".", "!", "?", ";")) else ". "
+    return f"{lead}{sep}{tail}"
+
+
+def _spot(bbox) -> str:
+    """A position suffix, so two marks disputing the SAME pair of readings on the same
+    sheet are two questions rather than one (D86).
+
+    Sheet 13 of the Apple demo carries two 100/1002 conflicts at opposite ends. Without
+    this they shared an `amb_id`, which is not a cosmetic duplicate: resolving one would
+    record a judgment matching BOTH, drop both from the queue, and leave the second mark
+    unreviewed while the record said a human had ruled on it. The same family as D69 and
+    D84 — a judgment applying to something it did not name — and on the one path where
+    exactness is the whole product.
+
+    Derived from the frozen manifest's coordinates, so it is stable across rebuilds.
+    """
+    if not bbox:
+        return ""
+    return f"@{int(round(bbox[0] * 10000)):04d}x{int(round(bbox[1] * 10000)):04d}"
+
+
 def ocr_conflict(coverage) -> list[Ambiguity]:
     """Two engines read one mark differently and the text favours neither.
 
@@ -152,20 +180,23 @@ def ocr_conflict(coverage) -> list[Ambiguity]:
             continue
         page = m.get("page")
         pair = sorted((lower, higher), key=lambda s: (len(s), s))
+        bbox = m.get("bbox")
         out.append(Ambiguity(
-            amb_id=f"{OCR_CONFLICT}:p{page}:{pair[0]}-{pair[1]}",
+            amb_id=f"{OCR_CONFLICT}:p{page}:{pair[0]}-{pair[1]}{_spot(bbox)}",
             kind=OCR_CONFLICT,
             label=f"{pair[0]} / {pair[1]}",
             question=f"Is this mark “{pair[0]}” or “{pair[1]}”?",
-            detail=m.get("message", "Two readings of one mark; nothing reconciled them."),
+            detail=_joined(
+                m.get("message", "Two readings of one mark; nothing reconciled them."),
+                (f"The mark at ({bbox[0]:.3f}, {bbox[1]:.3f}) on that sheet."
+                 if bbox else "")),
             options=(
                 Option(higher, "the reading with the higher OCR confidence"),
                 Option(lower, "the reading with the lower OCR confidence"),
                 Option("neither", "both engines misread it; the mark is something else"),
             ),
             proposed="",          # deliberately none — see the docstring
-            where={"page": page, "readings": [lower, higher],
-                   "bbox": m.get("bbox")},
+            where={"page": page, "readings": [lower, higher], "bbox": bbox},
         ))
     return out
 
@@ -267,7 +298,14 @@ def collect(*, text: str = "", mentions=(), coverage=None, assignments=(),
     work, while the rulings themselves live forever in the adjudication log. Clearing
     an item never clears the record of clearing it.
     """
-    done = resolved or set()
+    done = _resolved_ids(resolved or set(), _detect(text, mentions, coverage, assignments))
+    found: list[Ambiguity] = []
+    found = _detect(text, mentions, coverage, assignments)
+    return sorted((a for a in found if a.amb_id not in done),
+                  key=lambda a: (a.rank, len(a.label), a.label))
+
+
+def _detect(text, mentions, coverage, assignments) -> list[Ambiguity]:
     found: list[Ambiguity] = []
     if text and mentions:
         found += numeral_sense(text, mentions)
@@ -276,8 +314,48 @@ def collect(*, text: str = "", mentions=(), coverage=None, assignments=(),
         found += ocr_conflict(coverage)
     if assignments:
         found += figure_guess(assignments)
-    return sorted((a for a in found if a.amb_id not in done),
-                  key=lambda a: (a.rank, len(a.label), a.label))
+    return _note_siblings(found)
+
+
+def _note_siblings(found: list[Ambiguity]) -> list[Ambiguity]:
+    """Say "this pair collides more than once here" only where it actually does.
+
+    The position belongs on every conflict row — it is how a reviewer finds the mark.
+    The EXPLANATION for why the position matters belongs only on the rows that have a
+    sibling; putting it everywhere tells the reader a unique mark is one of several,
+    which is a small false statement made on every row of a judgment surface.
+    """
+    from collections import Counter
+    stems = Counter(a.amb_id.split("@")[0] for a in found if "@" in a.amb_id)
+    out = []
+    for a in found:
+        stem = a.amb_id.split("@")[0]
+        if "@" in a.amb_id and stems[stem] > 1:
+            a = replace(a, detail=_joined(
+                a.detail,
+                f"This pair of readings collides {stems[stem]} times on this sheet, so "
+                f"the position is what tells them apart."))
+        out.append(a)
+    return out
+
+
+def _resolved_ids(recorded: set[str], found: list[Ambiguity]) -> set[str]:
+    """Which ambiguities a set of recorded rulings actually closes.
+
+    Conflict ids gained a position suffix (D86), so a ruling recorded before that carries
+    the bare `kind:pN:a-b` form. Honouring it keeps completed review work closed — but
+    only where it is UNAMBIGUOUS. A legacy id that now covers two marks cannot say which
+    one the reviewer looked at, so both stay open: reopening work the reviewer may have
+    done costs them a second look, while closing a mark nobody examined puts their name
+    on a judgment they never made. Only one of those errors is recoverable.
+    """
+    ids = {a.amb_id for a in found}
+    out = set(recorded) & ids
+    for legacy in recorded - ids:
+        covered = [i for i in ids if i.startswith(legacy + "@")]
+        if len(covered) == 1:
+            out.add(covered[0])
+    return out
 
 
 def apply_to_manifest(manifest: dict, judgments) -> dict:

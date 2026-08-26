@@ -243,3 +243,61 @@ def test_only_ocr_conflicts_touch_marks(tmp_path):
     man = {"pages": [{"page": 2, "numerals": [
         {"numeral": "20", "x": 0.5, "y": 0.5, "w": .03, "h": .02, "confidence": 0.9}]}]}
     assert len(apply_adjudications(man, tmp_path)["pages"][0]["numerals"]) == 1
+
+
+def test_two_marks_disputing_the_same_readings_are_two_questions():
+    """D86: sheet 13 of the Apple demo carries two 100/1002 conflicts at opposite ends.
+
+    Sharing an `amb_id` is not a cosmetic duplicate. Resolving one would record a
+    judgment matching BOTH, drop both from the queue, and leave the second mark
+    unreviewed while the record said a human ruled on it — the D69/D84 family again, on
+    the one path where exactness is the product.
+    """
+    from cairn.ambiguity import ocr_conflict
+
+    cov = _Cov([
+        {"read_as": "100", "actually": "1002", "page": 13, "unresolved": True,
+         "bbox": [0.2628, 0.8052, 0.065, 0.017], "message": "engines disagree"},
+        {"read_as": "100", "actually": "1002", "page": 13, "unresolved": True,
+         "bbox": [0.2538, 0.2746, 0.065, 0.016], "message": "engines disagree"},
+    ])
+    ids = [a.amb_id for a in ocr_conflict(cov)]
+    assert len(set(ids)) == 2, ids
+    assert all("@" in i for i in ids)
+    # …and the rows READ differently, so the reviewer can tell them apart on the page
+    details = [a.detail for a in ocr_conflict(cov)]
+    assert details[0] != details[1]
+    assert "0.805" in details[0] or "0.805" in details[1]
+
+
+def test_the_position_suffix_is_stable_across_rebuilds():
+    """It comes from the frozen manifest's coordinates, so a resolution keeps pointing
+    at the mark it settled."""
+    from cairn.ambiguity import ocr_conflict
+    cov = _Cov([{"read_as": "100", "actually": "1002", "page": 13, "unresolved": True,
+                 "bbox": [0.2628, 0.8052, 0.065, 0.017], "message": "x"}])
+    assert ocr_conflict(cov)[0].amb_id == ocr_conflict(cov)[0].amb_id
+    assert ocr_conflict(cov)[0].amb_id.endswith("@2628x8052")
+
+
+def test_a_legacy_ruling_still_closes_an_unambiguous_ambiguity():
+    """Ids gained a suffix; completed review work must not silently reopen."""
+    from cairn.ambiguity import _resolved_ids, ocr_conflict
+    cov = _Cov([{"read_as": "12", "actually": "72", "page": 6, "unresolved": True,
+                 "bbox": [0.4115, 0.6032, 0.038, 0.021], "message": "x"}])
+    found = ocr_conflict(cov)
+    assert _resolved_ids({"ocr_conflict:p6:12-72"}, found) == {found[0].amb_id}
+
+
+def test_an_ambiguous_legacy_ruling_reopens_both_rather_than_closing_either():
+    """A legacy id covering two marks cannot say which one the reviewer looked at.
+    Reopening costs them a second look; closing a mark nobody examined puts their name
+    on a judgment they never made. Only one of those errors is recoverable."""
+    from cairn.ambiguity import _resolved_ids, ocr_conflict
+    cov = _Cov([
+        {"read_as": "100", "actually": "1002", "page": 13, "unresolved": True,
+         "bbox": [0.2628, 0.8052, 0.065, 0.017], "message": "x"},
+        {"read_as": "100", "actually": "1002", "page": 13, "unresolved": True,
+         "bbox": [0.2538, 0.2746, 0.065, 0.016], "message": "x"},
+    ])
+    assert _resolved_ids({"ocr_conflict:p13:100-1002"}, ocr_conflict(cov)) == set()
