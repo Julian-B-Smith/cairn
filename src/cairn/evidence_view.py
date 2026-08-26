@@ -23,7 +23,7 @@ from bisect import bisect_right
 from dataclasses import dataclass, field, replace
 
 from .cues import denial_cue_hits
-from .frame import QuestionFrame, check_coverage, frame_from_json
+from .frame import QuestionFrame, coverage_for_answer, frame_from_json
 from .retrieval import Hit
 from .spans import SpanStore
 from .verify import Answer, VerifyResult, answer_from_json, equation
@@ -669,7 +669,13 @@ def _answer_card(inter: Interaction, store: SpanStore, seg_id) -> str:
         parts.append(f'<p class="deriv">ƒ {_esc(eq)} <span class="{"ok" if deq_ok else "bad"}">'
                      f'{"✓ recomputed" if deq_ok else "✗ mismatch"}</span></p>')
     if inter.frame is not None:
-        cov = check_coverage(inter.frame, cited_texts)
+        # The POSITIONAL path, not the text-only one: `check_coverage` skips `locator`
+        # constraints because it has no offsets to check them with (D70), so calling it
+        # here silently dropped "claim 1" from the chips — the scope check ran, passed,
+        # and was then invisible to the reader. A verified constraint nobody can see is
+        # indistinguishable from one that was never checked.
+        cov = coverage_for_answer(inter.frame, inter.answer, store,
+                                  _units_for_answer(inter.answer, store))
         bits = [f'<span class="cov-ok">{_esc(c.role)} ✓ {_esc(c.text)}</span>' for c in cov.covered]
         bits += [
             f'<span class="cov-bad">{_esc(c.role)} ✗ {_esc(c.text)}</span>' for c in cov.missing
@@ -788,6 +794,25 @@ def _caption_tail(panel) -> str:
     # A shared range caption ("FIGS. 3 A-C are …") names siblings, not just this one —
     # kept whole, because which figures share it is information the reader needs.
     return f" · {cap}"
+
+
+def _units_for_answer(answer, store) -> list:
+    """Addressable units of every document this answer cites, for the locator check.
+
+    Built per render rather than cached: the view already re-runs `verify` against the
+    live corpus for the same reason — a stale index would answer a scope question about
+    offsets the corpus no longer has.
+    """
+    from .locator import units_for
+    if answer is None:
+        return []
+    out: list = []
+    for doc_id in {a.doc_id for s in answer.sentences for a in s.atoms}:
+        try:
+            out += units_for(store._docs[doc_id])
+        except (KeyError, AttributeError):      # a doc the view cannot resolve units for
+            continue
+    return out
 
 
 def _refuse_card(inter: Interaction, seg_id) -> str:
