@@ -381,3 +381,4 @@ API-wrapped service with **inline entailment-gating** (the structural-intercepti
 - 2026-08-18 · D83 · lint_question — a deterministic pre-flight check on the question, flagging never rewriting.
 - 2026-08-18 · D84 · interpretive rulings reshape the manifest and the text side, not just the queue.
 - 2026-08-26 · D85 · README console tour with eight screenshots over a public Apple patent; locator chip now renders.
+- 2026-08-26 · D86 · ambiguity ids carry position; two marks disputing one pair are two questions.
