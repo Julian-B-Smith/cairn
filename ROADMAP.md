@@ -10,17 +10,15 @@
 `TODO` · `WIP` · `BLOCKED` · `DONE` — task checkboxes mirror this (`- [ ]` / `- [x]`; `- [~]` = partial / first-cut).
 
 ### ▶ Current focus
-**The console is complete** (RT-10/RT-2/RT-7, D48–D52): seven panes — corpus · locate · evidence · drawings · adjudicate · mark-a-sheet · record — behind one frame whose header carries the corpus, its calibration state and the judgment count above every pane. The reviewer can now **write back**: a ranked review queue, one-click judgments, and drag-a-box to assert what OCR missed, all appended to a hash-chained record a machine cannot displace. **Build it:** `scripts/build_console.py`; **serve it:** `scripts/serve_console.py --reviewer "…" --on YYYY-MM-DD`. **▶ Next (unblocked, non-billed):** **PE-2** (the four structural §112 checks — domain depth for the live engagement, now with a surface to show it in), or **VER-1**'s remaining operations. **Open defect:** SIGBUS in `tiled_search` on the odd-geometry sheet. **Awaiting Julian:** trademark clearance on *Cairn*; intake Q13/Q16; one hour of blind annotation (now easy — the Mark-a-sheet pane).
+**The console is complete and its evidence path repaired** (RT-10/RT-2/RT-7, D48–D52; D62–D67): seven panes — corpus · locate · evidence · drawings · adjudicate · mark-a-sheet · record — behind one frame whose header carries the corpus, its calibration state, the judgment count and the open-reading count above every pane. The reviewer **writes back**: a ranked review queue, one-click judgments, drag-a-box to assert what OCR missed, and an **interpretation queue** (D77–D86) where questions of *meaning* are settled by a human and the ruling reshapes what the drawings and the reconciliation show (D84). All of it appends to a hash-chained record a machine cannot displace. **Build it:** `scripts/build_console.py`; **serve it:** `scripts/serve_console.py --reviewer "…" --on YYYY-MM-DD` (a public-patent walkthrough is in the README, D85). **▶ Next (unblocked, non-billed):** ruling feedback for the two interpretive kinds that still only clear a row (`figure_guess`, `element_phrase`); then agent-authored proposals in the interpretation queue (marked *inferred*, never applied on their own); **PE-2** (the four structural §112 checks); or **VER-1**'s remaining operations. **Open defect:** SIGBUS in `tiled_search` on the odd-geometry sheet. **Awaiting Julian:** trademark clearance on *Cairn*; intake Q13/Q16; one hour of blind annotation (now easy — the Mark-a-sheet pane).
 
-> **▶ Immediate (D62–D65, 2026-08-14).** Four defects found by reviewing the running
-> console, all on the evidence path, all now fixed with standing tests. The consequence
-> to act on: **D65 retroactively invalidates all 23 recorded answers for US5447630A** —
-> their bindings carry no corpus hash and their offsets no longer resolve, so the
-> engagement's evidence record is empty until the questions are **re-run against the
-> current store**. That re-run is the next task. Two gaps stay open: the audit record
-> persists a bare `ok` with no per-atom verdicts (so a past failure cannot be attributed
-> from the log alone), and the Adjudicate pane still shows no image crop, which makes
-> "is 20 really drawn here?" unanswerable at the point of judgment.
+> **▶ Immediate — closed (2026-09-09 review of the 08-14 block).** The four evidence-path
+> defects (D62–D65) are fixed with standing tests, the engagement record was **re-run
+> against the current store** (six questions covering all five outcome classes — the
+> earlier 23 answers were invalidated by D65 and are gone), and the Adjudicate pane shows
+> the mark's crop at the point of judgment (D66). A fresh agent must **not** re-run any of
+> that. One gap from that block stays open: the audit record persists a bare `ok` with no
+> per-atom verdicts, so a past failure cannot be attributed from the log alone.
 
 > **Done:** the evidence view is now a **parallel full-document view** — the whole
 > canonical document on the left with cited ranges highlighted in place, click a
@@ -41,9 +39,10 @@
 > to patent atoms (claim terms, numerals, dates). Retrieval recall tuning (the
 > G009 lexical gap) also lands here, where the Layer-0 recall gate drives it.
 
-> **Working mode:** single primary agent develops directly on `main` (no PR-per-task gate
-> in this repo). CI still runs on every push to `main`; a red gate or a violated invariant
-> is treated as not-done and must be fixed before advancing focus.
+> **Working mode (Decision 66, autonomous, 2026-08-18):** work lands on a `chore/<slug>`
+> branch and arrives as a PR with the evidence in its body; **merges are the human's**.
+> Nothing is committed to `main` directly. CI runs on every PR and push; a red gate or a
+> violated invariant is treated as not-done and must be fixed before advancing focus.
 
 ---
 
@@ -52,7 +51,7 @@
 1. Read **Current focus**. Take the topmost unchecked task in that milestone.
 2. Branch per the task's `branch:` field. Implement to the task's **acceptance criteria (AC)**.
 3. Open a PR. The **Layer-0 deterministic component evals (brief §3)** run as required CI. **No merge on a red gate or a violated invariant (I1–I6).** (Layer-E agent evals run periodically, not per-PR.)
-4. On green: merge, check the box, append a line to the **Changelog**, and advance **Current focus** to the next task.
+4. On green: check the box, append a line to the **Changelog**, advance **Current focus** to the next task, and leave the PR for the human to merge.
 5. A milestone is `DONE` only when its **Gate** passes. Do not begin the next milestone until then.
 6. Never start anything under **Backlog (v2)**. If a v1 task tempts you toward esoterica, see brief §9 (the trap): ambition goes into the oracle, nowhere else.
 
