@@ -264,8 +264,11 @@ reviewer's aid and never as a citation.
 Two queues. **Interpretation** asks which reading was meant — is this token a part number
 or a measurement, is this mark a 12 or a 72 — showing the evidence on both sides and a
 recommendation that is labelled a recommendation. Where the deterministic signals favour
-neither reading, it says so rather than inventing a favourite. **Location** asks whether a
-mark is really on the sheet, and shows the sheet, cropped to the mark.
+neither reading, it says so rather than inventing a favourite. Every ruling feeds back:
+a settled OCR conflict reshapes the sheet, a confirmed figure pairing carries the
+reviewer's name instead of the tool's asterisk, and a typed part name replaces the parsed
+fragment in the legend. **Location** asks whether a mark is really on the sheet, and shows
+the sheet, cropped to the mark.
 
 Nothing is pre-selected and there is no bulk accept: a queue that can be cleared without
 reading it produces a record saying a human looked when nobody did.

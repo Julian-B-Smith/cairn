@@ -85,8 +85,9 @@ def _patent_figure_context(store: SpanStore, store_dir: Path):
         img = sheet_file.get(a.page)
         if img is None:
             continue
-        how = (f"located by OCR, conf {a.confidence}" if a.method == "ocr"
-               else "assigned by elimination")
+        how = {"ocr": f"located by OCR, conf {a.confidence}",
+               "human": f"confirmed by {a.by} on {a.on}",     # figures_map.HUMAN (D87)
+               }.get(a.method, "assigned by elimination")
         uri = "data:image/png;base64," + base64.b64encode(img.read_bytes()).decode()
         # Every numeral OCR located on this sheet, converted ONCE here through the
         # tested box_to_display; the page only places what it is given (D66's lesson).

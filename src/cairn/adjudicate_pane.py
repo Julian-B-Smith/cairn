@@ -22,6 +22,7 @@ from __future__ import annotations
 import html
 import json
 
+from .ambiguity import TYPE_IN
 from .annotate import box_to_display
 from .refresh import button
 
@@ -143,9 +144,11 @@ def _ambiguities(ambs, sheet_files: dict[int, str] | None = None) -> str:
             ev = (f"<p class='ev'><b>as a part:</b> {_e(a.where['recited_as'])}</p>"
                   f"<p class='ev'><b>as a quantity:</b> {_e(a.where['quantity_as'])}</p>")
         opts = "".join(
-            "<button data-value='{v}'{c}>{v}<span>{r}</span></button>".format(
+            "<button data-value='{v}'{c}{ask}>{v}<span>{r}</span></button>".format(
                 v=_e(o.value), r=_e(o.rationale),
-                c=" class='rec'" if o.value == a.proposed else "")
+                c=" class='rec'" if o.value == a.proposed else "",
+                # The type-in option asks for the name and records THAT (D87).
+                ask=" data-ask='1'" if o.value == TYPE_IN else "")
             for o in a.options)
         if a.proposed:
             rec = (f"<p class='rec-note'>Cairn suggests <b>{_e(a.proposed)}</b> — a "
@@ -371,7 +374,14 @@ fetch('judged').then(r => r.json()).then(d => {
 document.querySelectorAll('.amb .opts button').forEach(btn => {
   btn.addEventListener('click', async () => {
     const li = btn.closest('.amb'), said = li.querySelector('.said');
-    const value = btn.dataset.value;
+    let value = btn.dataset.value;
+    if (btn.dataset.ask) {
+      // The part's real name comes from the reviewer, verbatim (D87). Nothing typed,
+      // nothing recorded: an empty ruling would close the question without answering it.
+      value = (prompt('The part\u2019s real name, as the specification calls it ' +
+                      '(recorded verbatim):') || '').trim();
+      if (!value) return;
+    }
     li.querySelectorAll('button').forEach(b => b.disabled = true);
     said.className = 'said'; said.textContent = 'recording\u2026';
     try {
