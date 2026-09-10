@@ -27,6 +27,7 @@ from .patents import numeral_key
 
 OCR = "ocr"
 ELIMINATION = "elimination"
+HUMAN = "human"           # a reviewer's ruling (D47/D87): provenance, never an OCR read
 
 # How far a figure's "current context" carries in the spec text. Patent prose says
 # "Referring now to FIG. 2, …" and then discusses that figure's parts for several
@@ -363,8 +364,10 @@ def label_pattern(label: str) -> str:
 class SheetAssignment:
     fig: str                  # "1", "3A"
     page: int                 # drawings-page-N
-    method: str               # OCR | ELIMINATION
+    method: str               # OCR | ELIMINATION | HUMAN
     confidence: float | None  # Vision confidence of the label (None for elimination)
+    by: str = ""              # who confirmed the pairing, when HUMAN (D87) — provenance
+    on: str = ""              #   is not optional, and "the reviewer" names nobody
 
 
 @dataclass(frozen=True)
@@ -431,6 +434,28 @@ def load_manifest(store_dir: str | Path) -> dict:
     verify_raster_binding(manifest, fig_dir)
     apply_adjudications(manifest, fig_dir)
     return manifest
+
+
+def reviewed_numerals(text: str, fig_dir: str | Path) -> list:
+    """The reference numerals the TEXT recites, merged with the reviewer's interpretive
+    rulings (D84, D87) — the text-side twin of `load_manifest`.
+
+    Every consumer that shows a numeral's name or counts it as recited reads through
+    here, for the same reason every drawings consumer reads through `load_manifest`: a
+    ruling must reach all of them, or the reviewer watches it reach none. Before this
+    the Drawings pane's legend called `reference_numerals` itself and went on listing a
+    numeral the reviewer had ruled was a measurement.
+    """
+    from .adjudication import AdjudicationLog
+    from .ambiguity import apply_to_numerals, resolutions
+    from .patents import reference_numerals
+
+    nums = reference_numerals(text)
+    log = AdjudicationLog(Path(fig_dir) / "adjudications.jsonl")
+    if not log.path.exists():
+        return nums
+    log.verify_chain()               # same discipline as the manifest side
+    return apply_to_numerals(nums, resolutions(log))
 
 
 # How near a judgment's coordinates must be to the mark it names. Deliberately the
@@ -523,13 +548,22 @@ def fig_to_sheets(manifest: dict, known_figs: list[str]) -> list[SheetAssignment
     for page in manifest["pages"]:
         for lab in page["fig_labels"]:
             if lab["fig"] in known:
-                out.append(SheetAssignment(lab["fig"], page["page"], OCR, lab["confidence"]))
+                # A label with `method: "human"` is a reviewer's ruling folded in by
+                # `load_manifest` (D87); it pairs like a read, with its own provenance.
+                out.append(SheetAssignment(lab["fig"], page["page"], lab.get("method", OCR),
+                                           lab["confidence"], lab.get("by", ""),
+                                           lab.get("on", "")))
                 labeled_pages.add(page["page"])
     assigned = {a.fig for a in out}
     missing = sorted(known - assigned)
-    unlabeled = [p["page"] for p in manifest["pages"] if p["page"] not in labeled_pages]
+    unlabeled = [p for p in manifest["pages"] if p["page"] not in labeled_pages]
     if len(missing) == 1 and len(unlabeled) == 1:
-        out.append(SheetAssignment(missing[0], unlabeled[0], ELIMINATION, None))
+        # A reviewer who ruled "no, that sheet is not FIG. N" (D87) has answered the
+        # question elimination would otherwise ask again on every build. The figure
+        # stays unassigned — a surfaced gap — rather than re-guessed.
+        rejected = {str(f).upper() for f in unlabeled[0].get("rejected_figs", [])}
+        if missing[0] not in rejected:
+            out.append(SheetAssignment(missing[0], unlabeled[0]["page"], ELIMINATION, None))
     return sorted(out, key=lambda a: (a.page, a.fig))
 
 

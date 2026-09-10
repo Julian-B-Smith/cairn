@@ -38,23 +38,11 @@ ROOT = Path(__file__).resolve().parent.parent
 
 
 def _text_numerals(text: str, adj_path: Path) -> list:
-    """Reference numerals the TEXT recites, minus any the reviewer ruled are not parts.
-
-    The feedback path for `numeral_sense` (D84). "20 is a measurement here, never the
-    scrubber" has to remove 20 from the legend and from the drawing/spec reconciliation,
-    not merely stop the overlay lighting it — otherwise the reconciliation goes on
-    reporting a numeral the reviewer has said does not exist, and the ruling reads as
-    having done nothing.
-    """
-    from cairn.adjudication import AdjudicationLog
-    from cairn.ambiguity import excluded_numerals, resolutions
-    from cairn.patents import reference_numerals
-
-    nums = reference_numerals(text)
-    if not adj_path.exists():
-        return nums
-    drop = excluded_numerals(resolutions(AdjudicationLog(adj_path)))
-    return [n for n in nums if str(n.number) not in drop]
+    """Reference numerals the TEXT recites, after the reviewer's interpretive rulings
+    (D84/D87) — one seam, `figures_map.reviewed_numerals`, shared with the Drawings pane
+    so a ruling reaches the legend and the reconciliation alike."""
+    from cairn.figures_map import reviewed_numerals
+    return reviewed_numerals(text, adj_path.parent)
 
 
 def _ambiguities_for(store_dir: Path, doc_id: str, adj_path: Path) -> list:
@@ -65,7 +53,7 @@ def _ambiguities_for(store_dir: Path, doc_id: str, adj_path: Path) -> list:
     the rulings themselves live in the append-only log.
     """
     from cairn.adjudication import AdjudicationLog
-    from cairn.ambiguity import collect, resolutions
+    from cairn.ambiguity import apply_to_numerals, collect, resolutions
     from cairn.figures_map import (
         fig_to_sheets,
         load_manifest,
@@ -82,10 +70,11 @@ def _ambiguities_for(store_dir: Path, doc_id: str, adj_path: Path) -> list:
     assigns = fig_to_sheets(manifest, [f.number for f in parse_figures(text)])
     cov = numeral_coverage(_text_numerals(text, adj_path), text, figure_references(text),
                            assigns, sightings)
-    log = AdjudicationLog(adj_path)
-    done = set(resolutions(log)) if adj_path.exists() else set()
-    return collect(text=text, mentions=numeral_mentions(text), coverage=cov,
-                   assignments=assigns, resolved=done)
+    ruled = resolutions(AdjudicationLog(adj_path)) if adj_path.exists() else {}
+    # Mentions carry the same rulings as the recited list: a numeral ruled "measurement
+    # only" is not a fork about a part, and a renamed one is shown by its name.
+    return collect(text=text, mentions=apply_to_numerals(numeral_mentions(text), ruled),
+                   coverage=cov, assignments=assigns, resolved=set(ruled))
 
 
 def _queue_for(store_dir: Path, doc_id: str, adjudicated: set[str],

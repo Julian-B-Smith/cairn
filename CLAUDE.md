@@ -39,15 +39,15 @@ or definitive claim construction (a patent professional is in the loop; UPL boun
 2. Implement to the task's **acceptance criteria (AC)**. State which invariants (I1–I6) it touches and how its tests cover them.
 3. A milestone is `DONE` only when its **Gate** passes. Don't begin the next milestone — or **anything under Backlog (v2)** — until then.
 
-### Working mode (single primary agent on `main`)
+### Working mode (branch → PR; merges are the human's)
 
-- **Commit directly to `main`** in small, single-purpose commits. There is **no PR gate** in this repo; CI runs on every push to `main`. If you do use a `feat/…` branch, **fast-forward merge it to `main` when done** — never leave finished work stranded on a branch.
-- **Run the gate before every commit:** `ruff check . && pytest -m layer0`. **Never mask the exit code** (don't pipe `pytest` through `tail`/`head` in an `&&` chain — a failure will look like success). A red gate or violated invariant means *not done*.
+- **Never commit to `main` directly** (Decision 66, autonomous, 2026-08-18). `git switch -c chore/<slug>`, commit in small single-purpose commits, `git push -u origin HEAD`, then `gh pr create` with the evidence in the PR body. **Do not merge** — merges are the human's. Never leave finished work stranded: the PR is open before the session ends.
+- **Run the gate before every commit:** `./verify fast` (kit integrity + leak gate + `ruff check .` + `pytest -m layer0`). **Never mask the exit code** (don't pipe `pytest` through `tail`/`head` in an `&&` chain — a failure will look like success). A red gate or violated invariant means *not done*.
 - **Definition of done — do every item, every time** (a second agent skipped this and it had to be back-filled):
   1. `[x]` the task box in ROADMAP with a one-line **DONE** note (what + which tests).
   2. Append a **Changelog** line: `YYYY-MM-DD · M#-T# · short note`.
   3. Advance **▶ Current focus** to the next task.
-  4. `git push` and confirm CI is green.
+  4. Push, open (or update) the PR, and confirm CI is green.
 - **New design decisions get a new `D#` row** in [`DECISIONS.md`](DECISIONS.md) with rationale. The Decisions log and the golden oracle are append-only and binding — don't quietly change behavior that a `D#` established.
 
 ## Setup, the gate, and where things live

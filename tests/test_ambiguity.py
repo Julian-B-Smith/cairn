@@ -301,3 +301,118 @@ def test_an_ambiguous_legacy_ruling_reopens_both_rather_than_closing_either():
          "bbox": [0.2538, 0.2746, 0.065, 0.016], "message": "x"},
     ])
     assert _resolved_ids({"ocr_conflict:p13:100-1002"}, ocr_conflict(cov)) == set()
+
+
+# --- D87: the two interpretive kinds that used to only clear a row ------------------
+
+def _figure_ruling(tmp_path, fig, page, chosen):
+    from cairn.adjudication import Adjudication, AdjudicationLog
+    from cairn.ambiguity import FIGURE_GUESS, TARGET_KIND
+    log = AdjudicationLog(tmp_path / "adjudications.jsonl")
+    kind = "confirm" if chosen == "yes" else "correct"
+    log.append(Adjudication(
+        adj_id=f"{FIGURE_GUESS}:{fig}::{kind}::2026-09-09", kind=kind,
+        target_kind=TARGET_KIND, target={"amb_id": f"{FIGURE_GUESS}:{fig}", "fig": fig,
+                                         "page": page},
+        value={"reading": chosen}, by="J. Smith", on="2026-09-09"))
+    return log
+
+
+def test_confirming_a_figure_pairing_gives_it_human_provenance(tmp_path):
+    """D87: "yes, sheet p.7 shows FIG. 6" is a reading by a person. The pairing must
+    stop being "by elimination" — the Drawings pane's asterisk says the tool guessed,
+    and after this ruling it did not — and must say who read it."""
+    from cairn.ambiguity import figure_guess
+    from cairn.figures_map import HUMAN, apply_adjudications, fig_to_sheets
+
+    _figure_ruling(tmp_path, "6", 7, "yes")
+    man = {"pages": [{"page": 7, "fig_labels": [], "numerals": []}]}
+    got = {a.fig: a for a in fig_to_sheets(apply_adjudications(man, tmp_path), ["6"])}
+    a = got["6"]
+    assert a.page == 7 and a.method == HUMAN and a.confidence == 1.0
+    assert a.by == "J. Smith" and a.on == "2026-09-09", "provenance names the person"
+    assert figure_guess([a]) == [], "a confirmed pairing is no longer a question"
+    assert man["pages"][0]["numerals"] == [], "a figure is not a mark"
+
+
+def test_rejecting_a_figure_pairing_leaves_the_figure_unassigned(tmp_path):
+    """"No" must not be re-guessed. One figure and one sheet are still left over, so
+    elimination would pair them again on the next build and put the question the
+    reviewer just answered back in the queue. The figure stays unassigned — a surfaced
+    gap, which is what the reviewer said it is."""
+    from cairn.figures_map import apply_adjudications, fig_to_sheets
+
+    _figure_ruling(tmp_path, "6", 7, "no")
+    man = {"pages": [{"page": 7, "fig_labels": [], "numerals": []}]}
+    assert fig_to_sheets(apply_adjudications(man, tmp_path), ["6"]) == []
+
+
+def test_a_rejection_on_one_sheet_does_not_stop_elimination_on_another(tmp_path):
+    """The ruling is about THAT sheet. With a different lone sheet left over, elimination
+    still pairs — the reviewer said p.7 is not FIG. 6, not that FIG. 6 is nowhere."""
+    from cairn.figures_map import ELIMINATION, apply_adjudications, fig_to_sheets
+
+    _figure_ruling(tmp_path, "6", 7, "no")
+    man = {"pages": [
+        {"page": 7, "fig_labels": [{"fig": "5", "confidence": 0.9}], "numerals": []},
+        {"page": 8, "fig_labels": [], "numerals": []},
+    ]}
+    got = {a.fig: a for a in fig_to_sheets(apply_adjudications(man, tmp_path), ["5", "6"])}
+    assert got["6"].page == 8 and got["6"].method == ELIMINATION
+
+
+def test_a_typed_name_replaces_the_parsed_fragment_and_nothing_else():
+    """The reviewer typed "flow diverter" over "include a". The name changes; where the
+    numeral was read does not — the location is evidence, the name is a label."""
+    from cairn.ambiguity import ELEMENT_PHRASE, apply_to_numerals
+    from cairn.patents import Numeral
+
+    nums = [Numeral("30", "include a", 10, 22), Numeral("20", "ceramic scrubber", 0, 5)]
+    got = apply_to_numerals(nums, {f"{ELEMENT_PHRASE}:30": "flow diverter"})
+    assert [(n.number, n.element) for n in got] == [("30", "flow diverter"),
+                                                    ("20", "ceramic scrubber")]
+    assert (got[0].char_start, got[0].char_end) == (10, 22)
+
+
+def test_the_type_in_sentinel_is_never_a_name():
+    """The page asks for the name and sends that; but the page is not what decides. A
+    ruling whose reading is the sentinel, or blank, names nothing — and must not
+    rename the part to "(correct it)"."""
+    from cairn.ambiguity import ELEMENT_PHRASE, TYPE_IN, renamed_numerals
+
+    assert renamed_numerals({f"{ELEMENT_PHRASE}:30": TYPE_IN}) == {}
+    assert renamed_numerals({f"{ELEMENT_PHRASE}:30": "   "}) == {}
+    assert renamed_numerals({f"{ELEMENT_PHRASE}:30": " flow diverter "}) == {"30": "flow diverter"}
+
+
+def test_text_side_rulings_reach_every_consumer_through_one_seam(tmp_path):
+    """`reviewed_numerals` is the text-side twin of `load_manifest`: drop and rename
+    together, from the same log, so the legend and the reconciliation agree. Before it
+    the Drawings pane called `reference_numerals` itself and kept listing a numeral the
+    reviewer had ruled was a measurement."""
+    from cairn.adjudication import Adjudication, AdjudicationLog
+    from cairn.ambiguity import ELEMENT_PHRASE, TARGET_KIND
+    from cairn.figures_map import reviewed_numerals
+
+    log = AdjudicationLog(tmp_path / "adjudications.jsonl")
+    log.append(Adjudication(
+        adj_id=f"{NUMERAL_SENSE}:20::correct::2026-09-09", kind="correct",
+        target_kind=TARGET_KIND, target={"amb_id": f"{NUMERAL_SENSE}:20", "numeral": "20"},
+        value={"reading": "measurement only"}, by="J. Smith", on="2026-09-09"))
+    log.append(Adjudication(
+        adj_id=f"{ELEMENT_PHRASE}:80::correct::2026-09-09", kind="correct",
+        target_kind=TARGET_KIND, target={"amb_id": f"{ELEMENT_PHRASE}:80", "numeral": "80"},
+        value={"reading": "upper plenum"}, by="J. Smith", on="2026-09-09"))
+    got = reviewed_numerals(TEXT, tmp_path)
+    assert [(n.number, n.element) for n in got] == [("80", "upper plenum")]
+    # No log at all: the text as parsed, untouched.
+    assert [n.number for n in reviewed_numerals(TEXT, tmp_path / "nowhere")] == ["20", "80"]
+
+
+def test_the_pane_asks_for_the_name_only_on_the_type_in_option():
+    from cairn.adjudicate_pane import _ambiguities
+    from cairn.ambiguity import TYPE_IN, element_phrase
+    from cairn.patents import Numeral
+
+    html = _ambiguities(element_phrase([Numeral("30", "include a", 10, 22)]))
+    assert html.count("data-ask") == 1 and TYPE_IN in html

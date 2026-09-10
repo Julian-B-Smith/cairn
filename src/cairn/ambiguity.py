@@ -41,6 +41,11 @@ OCR_CONFLICT = "ocr_conflict"          # two engines, two readings, nothing reco
 FIGURE_GUESS = "figure_guess"          # a sheet paired to a figure by elimination
 ELEMENT_PHRASE = "element_phrase"      # the parser took a clause for a part name
 
+# The `element_phrase` option that means "type the part's real name". The pane asks for
+# the name when this is chosen and records THAT; the literal itself must never land as
+# a name, so `renamed_numerals` refuses it even if a page sends it.
+TYPE_IN = "(correct it)"
+
 _RANK = {NUMERAL_SENSE: 1, OCR_CONFLICT: 2, FIGURE_GUESS: 3, ELEMENT_PHRASE: 4}
 
 
@@ -252,8 +257,8 @@ def element_phrase(mentions) -> list[Ambiguity]:
                     f"fragment rather than a part name — the numeral is located "
                     f"correctly, but this is the name the legend shows."),
             options=(Option(m.element, "keep the parsed phrase"),
-                     Option("(correct it)", "type the part's real name")),
-            proposed="(correct it)",
+                     Option(TYPE_IN, "type the part's real name")),
+            proposed=TYPE_IN,
             where={"numeral": label, "char_start": m.char_start, "char_end": m.char_end},
         ))
     return out
@@ -288,6 +293,36 @@ def excluded_numerals(resolved: dict[str, str]) -> set[str]:
     """
     return {amb_id.split(":", 1)[1] for amb_id, reading in resolved.items()
             if amb_id.startswith(f"{NUMERAL_SENSE}:") and reading == "measurement only"}
+
+
+def renamed_numerals(resolved: dict[str, str]) -> dict[str, str]:
+    """Numeral → the part name a reviewer typed in place of a parsed fragment.
+
+    The feedback path for `element_phrase` (D87). Until this, a reviewer who typed
+    "flow diverter" over "include a" saw the row leave the queue and the legend keep the
+    fragment. The type-in sentinel is refused HERE, not only in the page: a name is a
+    name only if a person supplied one, and the page is not the place to trust for that.
+    """
+    out: dict[str, str] = {}
+    for amb_id, reading in resolved.items():
+        name = (reading or "").strip()
+        if amb_id.startswith(f"{ELEMENT_PHRASE}:") and name and name != TYPE_IN:
+            out[amb_id.split(":", 1)[1]] = name
+    return out
+
+
+def apply_to_numerals(numerals, resolved: dict[str, str]) -> list:
+    """Fold the TEXT-side rulings into the recited numerals (D84, D87): drop what the
+    reviewer ruled is never a reference numeral here, rename what they named.
+
+    The one seam every text-side consumer reads through — the legend, the
+    reconciliation, the queue — so a ruling reaches all of them or none. A consumer
+    that calls `reference_numerals` directly shows the reviewer a ruling that did
+    nothing. Locations are untouched: only the name changes, never where it was read.
+    """
+    drop, names = excluded_numerals(resolved), renamed_numerals(resolved)
+    return [replace(n, element=names[n.number]) if n.number in names else n
+            for n in numerals if str(n.number) not in drop]
 
 
 def collect(*, text: str = "", mentions=(), coverage=None, assignments=(),
@@ -373,20 +408,26 @@ def apply_to_manifest(manifest: dict, judgments) -> dict:
     something else again. The survivor is restamped as human-confirmed, so provenance
     shows a person settled it rather than an engine winning on confidence.
 
-    `numeral_sense` and `element_phrase` are about the TEXT and are applied on that
-    side (`excluded_numerals`); `figure_guess` is about an assignment, not a mark.
+    `figure_guess` is about a sheet's FIG label, and lands there (`_apply_figure_ruling`,
+    D87) — never on `numerals`. `numeral_sense` and `element_phrase` are about the TEXT
+    and are applied on that side (`apply_to_numerals`).
     """
     by_page = {p["page"]: p for p in manifest["pages"]}
     for a in judgments:
         if a.target_kind != TARGET_KIND:
             continue
         amb_id = a.target.get("amb_id", "")
+        page = by_page.get(a.target.get("page"))
+        chosen = (a.value or {}).get("reading")
+        if page is None or not chosen:
+            continue
+        if amb_id.startswith(f"{FIGURE_GUESS}:"):
+            _apply_figure_ruling(page, a, chosen)
+            continue
         if not amb_id.startswith(f"{OCR_CONFLICT}:"):
             continue
-        page = by_page.get(a.target.get("page"))
         readings = {str(r) for r in (a.target.get("readings") or [])}
-        chosen = (a.value or {}).get("reading")
-        if page is None or not readings or not chosen:
+        if not readings:
             continue
         bbox = a.target.get("bbox") or []
         x, y = (bbox + [None, None])[:2]
@@ -404,6 +445,28 @@ def apply_to_manifest(manifest: dict, judgments) -> dict:
                              "adjudication": a.adj_id, "by": a.by, "on": a.on})
         page["numerals"] = kept
     return manifest
+
+
+def _apply_figure_ruling(page: dict, a, chosen: str) -> None:
+    """A `figure_guess` ruling lands on the sheet's FIG labels (D87).
+
+    "yes" writes a label with human provenance, so `fig_to_sheets` pairs the figure by a
+    reading rather than by what was left over — and the Drawings pane drops the
+    elimination asterisk, because after this ruling the tool did not guess. "no" records
+    that this sheet does NOT show the figure; without that, the next build would find
+    the same figure and the same sheet left over, pair them by elimination again, and put
+    the question the reviewer just answered back in the queue. Neither touches
+    `numerals`: a figure is not a mark (the guard tested since D77).
+    """
+    fig = str(a.target.get("fig", "")).upper()
+    if not fig:
+        return
+    if chosen == "yes":
+        page.setdefault("fig_labels", []).append({
+            "fig": fig, "confidence": 1.0, "method": "human",
+            "adjudication": a.adj_id, "by": a.by, "on": a.on})
+    elif chosen == "no":
+        page.setdefault("rejected_figs", []).append(fig)
 
 
 # Wider than `_MARK_RADIUS`: the two readings of ONE mark are boxed by different

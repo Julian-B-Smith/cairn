@@ -33,12 +33,16 @@ from pathlib import Path
 import _bootstrap  # noqa: F401  (puts src/ on sys.path)
 
 from cairn.figures_map import (
+    ELIMINATION,
+    HUMAN,
+    OCR,
     fig_to_sheets,
     is_locatable,
     load_manifest,
     numeral_coverage,
     numeral_figures,
     numeral_sightings,
+    reviewed_numerals,
     sub_figure_parent,
     view_marker_letters,
 )
@@ -49,7 +53,6 @@ from cairn.patents import (
     dimension_labels,
     figure_references,
     parse_figures,
-    reference_numerals,
 )
 from cairn.spans import SpanStore
 
@@ -228,9 +231,8 @@ def main() -> int:
     text = store.get_document(ns.doc)
     figs = parse_figures(text)
     refs = figure_references(text)
-    nums = reference_numerals(text)
-
     fig_dir = Path(ns.store).parent / "figures"
+    nums = reviewed_numerals(text, fig_dir)       # after the reviewer's rulings (D84/D87)
     manifest_path = fig_dir / "figures_manifest.json"
     if not manifest_path.exists():
         print(f"no figures manifest at {manifest_path} — run scripts/fetch_patent_figures.py first")
@@ -287,9 +289,12 @@ def main() -> int:
         a = assignments.get(fig_number)
         if not a:
             return ""
-        how = f"OCR conf {a.confidence}" if a.method == "ocr" else "by elimination"
+        # The asterisk means "the tool guessed"; a reviewer's confirmation (D87) is the
+        # opposite of a guess, so it carries their name instead.
+        how = {OCR: f"OCR conf {a.confidence}", HUMAN: f"confirmed by {a.by} on {a.on}"
+               }.get(a.method, "by elimination")
         return (f' <span class="sh" data-page="{a.page}" title="{how}">'
-                f"sheet p.{a.page}{'*' if a.method != 'ocr' else ''}</span>")
+                f"sheet p.{a.page}{'*' if a.method == ELIMINATION else ''}</span>")
     def _page_of(fig_number: str) -> str:
         a = assignments.get(fig_number)
         return str(a.page) if a else ""
