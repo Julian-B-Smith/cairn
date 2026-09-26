@@ -147,6 +147,7 @@ def main() -> int:
     ok_record = _run("build_review_report.py",
                      ["--store", ns.store, "--audit", ns.audit, "--on", ns.on,
                       *(["--engagement", ns.engagement] if ns.engagement else []),
+                      *(["--doc", ns.doc] if ns.doc else []),     # claims section (D89)
                       "--out", str(out / "record.html")])
     ok_figures = False
     fig_dir = store_dir.parent / "figures"
