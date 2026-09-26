@@ -14,12 +14,30 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from .tools import SUPPORT_THRESHOLD, default_registry
+from .tools import default_registry
+
+
+def threshold_from_env(environ) -> float | None:
+    """The support floor the OPERATOR chose, or None to use the store's calibration.
+
+    None is the load-bearing default. This used to fall back to the EDGAR constant, so
+    every MCP session passed an explicit float, `default_registry` never read the
+    store's calibration record (RT-9), and every audit entry was stamped "EXPLICIT
+    OVERRIDE … supplied by the caller" — false, since nobody supplied it. On the patent
+    engagement that meant deciding at 15.0 instead of the store's calibrated 6.2, and
+    the MCP path is the one the agent loop and Layer-E both use. (Audit 2026-09-26.)
+    """
+    raw = (environ.get("CAIRN_SUPPORT_THRESHOLD") or "").strip()
+    return float(raw) if raw else None
 
 
 def build_server(store_dir: Path | str = "corpus/store", audit_path: Path | str | None = None,
-                 *, support_threshold: float = SUPPORT_THRESHOLD):
-    """Build an MCP Server exposing the CAIRN tools. Requires the `mcp` SDK."""
+                 *, support_threshold: float | None = None):
+    """Build an MCP Server exposing the CAIRN tools. Requires the `mcp` SDK.
+
+    `support_threshold=None` resolves the floor from the store's calibration record;
+    pass a float only for a deliberate, operator-chosen override.
+    """
     import mcp.types as types
     from mcp.server import Server
 
@@ -55,7 +73,6 @@ def main() -> int:  # pragma: no cover - requires the mcp SDK + a stdio client
     # score from the audit log. Configurable for tests/CI.
     store_dir = os.environ.get("CAIRN_STORE", "corpus/store")
     audit_path = os.environ.get("CAIRN_AUDIT", "audit_log/agent.jsonl")
-    threshold = os.environ.get("CAIRN_SUPPORT_THRESHOLD")
 
     # Session delimiter (RT-1): each server spawn = one working session. The clock
     # lives here in the adapter (I6 cores stay clock-free); label via env.
@@ -70,10 +87,8 @@ def main() -> int:  # pragma: no cover - requires the mcp SDK + a stdio client
         ts=time.strftime("%Y-%m-%dT%H:%M:%S%z"),
     ))
 
-    server = build_server(
-        store_dir, audit_path,
-        support_threshold=float(threshold) if threshold else SUPPORT_THRESHOLD,
-    )
+    server = build_server(store_dir, audit_path,
+                          support_threshold=threshold_from_env(os.environ))
 
     async def _run() -> None:
         async with stdio_server() as (read, write):
