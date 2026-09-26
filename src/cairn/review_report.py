@@ -54,6 +54,7 @@ class ReportData:
     interactions: list           # evidence_view.Interaction
     entries: list[dict] = field(default_factory=list)   # raw audit payloads
     generated_on: str = ""       # supplied by the caller — cores stay clock-free (I6)
+    claims: object | None = None  # claim_record.ClaimsSection, for a patent (D89)
 
 
 def corpus_identity(store_dir: str | Path, doc_store) -> CorpusIdentity:
@@ -102,6 +103,26 @@ LIMITS: list[tuple[str, str]] = [
 ]
 
 
+# Limits that apply only when the record carries a claims section (D89). Listed with the
+# others, first, for the same reason: a caveat met after the findings has not worked.
+CLAIM_LIMITS: list[tuple[str, str]] = [
+    ("A passage that resembles a limitation is not support for it",
+     "Each claim limitation is shown beside the description passages that share the most "
+     "words with it, ranked by BM25. A high rank means shared vocabulary. It does not "
+     "establish written description, enablement or any other sufficiency, and a low rank "
+     "does not establish their absence."),
+    ("The vocabulary check is literal",
+     "A limitation word is reported absent only when neither it nor a close form of it (a "
+     "plural, or a shared stem of five letters or more) appears anywhere in the "
+     "description. Synonyms are not recognised, and the rule errs toward not flagging: it "
+     "can miss a difference in wording, but every word it reports absent is absent."),
+    ("Dates are reproduced, not interpreted",
+     "Front-page dates are shown as printed, with the effective-filing date derived from "
+     "them and its basis cited. Term, expiry and maintenance status are not computed; they "
+     "depend on facts this document does not contain."),
+]
+
+
 def outcome_counts(interactions: list) -> dict[str, int]:
     counts: dict[str, int] = {}
     for i in interactions:
@@ -132,6 +153,126 @@ def _esc(s: object) -> str:
     return html.escape(str(s), quote=True)
 
 
+def _filing_html(f) -> str:
+    rows = [("Patent", f.patent_number), ("Date of patent", f.date_of_patent),
+            ("Application", f.application_number), ("Filed", f.filed)]
+    rows += [("Priority claim", p) for p in f.priority_claims]
+    shown = [(k, v) for k, v in rows if v]
+    if not shown:
+        # Said, not left blank: a missing table and a table nobody rendered look alike.
+        return ("<p class='sub'>No front-page fields were found in this document's text, "
+                "so no dates are reproduced and no effective-filing date is derived.</p>")
+    body = "".join(f"<tr><th>{_esc(k)}</th><td>{_esc(v)}</td></tr>" for k, v in shown)
+    r = f.regime
+    if r:
+        body += (f"<tr><th>Effective filing</th><td>{_esc(r['effective_filing_date'])} "
+                 f"<span class='sub'>· basis: “{_esc(r['basis'])}”</span></td></tr>"
+                 f"<tr><th>AIA comparison</th><td>{_esc(r['flag'])} — "
+                 f"{_esc(r['comparison'])}<br><span class='sub'>{_esc(r['note'])}</span>"
+                 f"</td></tr>")
+    return f"<table class='kv'>{body}</table>"
+
+
+def _claims_html(sec) -> str:
+    """The claims half of the record (D89). Wording is load-bearing: *resembles*, never
+    *supports*; *absent from the description*, never *unsupported* (D10)."""
+    from .claim_record import RELATED
+
+    n_ind = sum(1 for c in sec.claims if c.kind == "independent")
+    if sec.dependency_issues:
+        deps = "<ul>" + "".join(f"<li class='flag'>{_esc(i.message)}</li>"
+                                for i in sec.dependency_issues) + "</ul>"
+    else:
+        deps = ("<p>Every dependent claim refers to a claim that exists and comes before "
+                "it.</p>")
+
+    # One row per word, with its plural folded in: "end" and "ends" are one absence, and
+    # two rows for it read as two findings. Counted per limitation, not per occurrence.
+    absent_all = {w for c in sec.claims for lim in c.limitations for w in lim.absent}
+
+    def _key(w: str) -> str:
+        return w[:-1] if w.endswith("s") and w[:-1] in absent_all else w
+
+    tally: dict[str, list[int]] = {}
+    shown_as: dict[str, set[str]] = {}
+    for c in sec.claims:
+        for lim in c.limitations:
+            for k in sorted({_key(w) for w in lim.absent}):
+                tally.setdefault(k, []).append(c.number)
+            for w in lim.absent:
+                shown_as.setdefault(_key(w), set()).add(w)
+    if tally:
+        vocab = "".join(
+            f"<tr><td class='mono'>{_esc(' / '.join(sorted(shown_as[w])))}</td>"
+            f"<td>{len(ns)}</td>"
+            f"<td>{_esc(', '.join(str(n) for n in sorted(set(ns))))}</td></tr>"
+            for w, ns in sorted(tally.items(), key=lambda kv: (-len(kv[1]), kv[0])))
+        vocab = ("<table><thead><tr><th>Word</th><th>Limitations using it</th>"
+                 f"<th>Claims</th></tr></thead><tbody>{vocab}</tbody></table>")
+    else:
+        vocab = ("<p>Every content word in every limitation appears in the description, "
+                 "verbatim or in a related form.</p>")
+
+    blocks = []
+    for c in sec.claims:
+        head = ("independent" if c.depends_on is None
+                else f"depends on claim {c.depends_on}")
+        lims = []
+        for lim in c.limitations:
+            notes = []
+            if lim.absent:
+                notes.append("<span class='flag'>not in the description in any form: "
+                             + _esc(", ".join(lim.absent)) + "</span>")
+            rel = [t for t in lim.terms if t.status == RELATED]
+            if rel:
+                notes.append("<span class='sub'>description's wording: " + _esc("; ".join(
+                    f"{t.word} → {', '.join(t.forms[:3])}" for t in rel)) + "</span>")
+            n_words = len(lim.terms)
+            cands = "".join(
+                f"<li><b>{_esc(cd.label)}</b> <span class='mono sm'>"
+                f"[{cd.char_start}–{cd.char_end}]</span> · shares {len(cd.shared)} of "
+                f"{n_words} words · BM25 {cd.score:g}</li>" for cd in lim.candidates)
+            cands = (f"<ul class='cands'>{cands}</ul>" if cands else
+                     "<p class='sub'>No description passage shares any word with it.</p>")
+            # Built outside the f-string: 3.11 cannot reuse the outer quote inside one.
+            notes_html = ("<div class='notes'>" + "<br>".join(notes) + "</div>"
+                          if notes else "")
+            lims.append(
+                f"<li class='lim{' has-flag' if lim.absent else ''}'>"
+                f"<div><span class='ln'>{lim.index}</span> {_esc(lim.text)} "
+                f"<span class='mono sm mut'>[{lim.char_start}–{lim.char_end}]</span></div>"
+                f"{notes_html}"
+                f"<div class='sub'>Resembling passages, ranked:</div>{cands}</li>")
+        absent_n = sum(1 for lim in c.limitations if lim.absent)
+        blocks.append(
+            f"<section class='claim'><h3>Claim {c.number} <span class='sub'>· {head} · "
+            f"{len(c.limitations)} limitation(s)"
+            f"{f' · {absent_n} with absent words' if absent_n else ''} · "
+            f"<span class='mono'>[{c.char_start}–{c.char_end}]</span></span></h3>"
+            f"<ol class='lims'>{''.join(lims)}</ol></section>")
+
+    return f"""
+<h2>The patent as printed</h2>
+{_filing_html(sec.filing)}
+
+<h2>Claims and the description</h2>
+<p class='sub'>{len(sec.claims)} claims ({n_ind} independent) · {sec.n_limitations}
+ limitations · {sec.n_paragraphs} description passages. Each limitation is shown with the
+ passages that share the most words with it — where a reviewer starts reading, not a
+ finding that the description supports the claim.</p>
+<h3>Claim dependencies</h3>
+{deps}
+<p class='sub'>Where a claim refers to more than one earlier claim, the first reference is
+ the one checked.</p>
+<h3>Words the claims use that the description never does</h3>
+<p class='sub'>In any form. {sec.limitations_with_absent_words} of {sec.n_limitations}
+ limitations use at least one. A different word can describe the same thing; this list
+ says where the wording differs, not whether the substance does.</p>
+{vocab}
+{''.join(blocks)}
+"""
+
+
 def render(data: ReportData) -> str:
     """The self-contained HTML report (Q16 default; see module docstring)."""
     c = data.corpus
@@ -140,7 +281,9 @@ def render(data: ReportData) -> str:
     cal_class = "ok" if c.calibrated else "warn"
 
     limits = "".join(
-        f"<li><b>{_esc(t)}.</b> {_esc(body)}</li>" for t, body in LIMITS)
+        f"<li><b>{_esc(t)}.</b> {_esc(body)}</li>"
+        for t, body in LIMITS + (CLAIM_LIMITS if data.claims is not None else []))
+    claims_html = _claims_html(data.claims) if data.claims is not None else ""
 
     docs = "".join(
         f"<tr><td class='mono'>{_esc(d)}</td>"
@@ -180,7 +323,7 @@ def render(data: ReportData) -> str:
         contract=_esc(CONTRACT_VERSION), limits=limits, docs=docs,
         cal_class=cal_class, calibration=_esc(c.calibration),
         chips=chips or "<span class='chip'>no interactions</span>",
-        interactions=interactions_html, rejected=rej_html,
+        interactions=interactions_html, rejected=rej_html, claims=claims_html,
         n_rejected=len(rejected), n_docs=len(c.doc_ids),
         n_interactions=len(data.interactions))
 
@@ -220,6 +363,19 @@ th{{font-size:11.5px;text-transform:uppercase;letter-spacing:.06em;color:var(--m
  font-family:ui-sans-serif,system-ui,sans-serif}}
 .state.ok{{background:var(--okbg);border:1px solid #bcd8c8}}
 .state.warn{{background:var(--warnbg);border:1px solid #e6b3ae;color:var(--warn)}}
+h3{{font:600 15px/1.35 ui-sans-serif,system-ui,sans-serif;margin:24px 0 8px}}
+table.kv th{{width:170px;text-transform:none;letter-spacing:0;font-size:13px}}
+.flag{{color:var(--warn)}}
+.mut{{color:var(--mut)}}
+.claim{{border-top:1px solid var(--rule);margin-top:22px;break-inside:avoid-page}}
+.claim h3 .sub{{font-weight:400}}
+ol.lims{{list-style:none;padding:0;margin:0}}
+.lim{{padding:10px 0 10px 14px;border-left:3px solid var(--rule);margin:8px 0}}
+.lim.has-flag{{border-left-color:var(--warn)}}
+.lim .ln{{display:inline-block;min-width:1.6em;font:600 12px ui-monospace,Menlo,monospace;
+ color:var(--mut)}}
+.notes{{margin:5px 0;font:13px/1.5 ui-sans-serif,system-ui,sans-serif}}
+ul.cands{{margin:3px 0 0;padding-left:20px;font:13px/1.6 ui-sans-serif,system-ui,sans-serif}}
 .sign{{margin-top:44px;border-top:2px solid var(--ink);padding-top:16px;
  font:13.5px/1.9 ui-sans-serif,system-ui,sans-serif}}
 .sign .line{{display:inline-block;border-bottom:1px solid var(--ink);
@@ -242,7 +398,7 @@ th{{font-size:11.5px;text-transform:uppercase;letter-spacing:.06em;color:var(--m
 <table><thead><tr><th>Document</th><th>SHA-256 at ingest</th></tr></thead>
 <tbody>{docs}</tbody></table>
 <div class="state {cal_class}">{calibration}</div>
-
+{claims}
 <h2>Outcomes</h2>
 <p class="sub">Every interaction resolves to one of five recorded outcomes. A refusal to
  reach a legal conclusion, and an abstention for want of evidence, are outcomes in their

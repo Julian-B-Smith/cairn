@@ -289,8 +289,12 @@ removal. The log is append-only; nothing is ever edited away.
 **Limits first, before any finding.** Retrieval is a ranked slice and not an exhaustive
 search; a verified citation is real but not necessarily supporting; nothing here is a
 legal conclusion; absence of a flag is not evidence of correctness. Then the corpus
-hashes, the outcome tally across all five classes, and every citation with its offsets
-and verification status.
+hashes, and — for a patent — **the claims**: the front-page dates as printed with the
+effective-filing date and its cited basis; whether every dependent claim points at an
+earlier one; and for every limitation, the description passages that *resemble* it and
+which of its words the description never uses in any form. Resemblance is where a reviewer
+starts reading, never a finding of support. Then the outcome tally across all five
+classes, and every citation with its offsets and verification status.
 
 ## Status & roadmap
 
