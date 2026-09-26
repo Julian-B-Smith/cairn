@@ -288,3 +288,29 @@ def test_tool_inputs_are_bounded_not_merely_typed(tmp_path):
     k = reg["search_corpus"].input_schema["properties"]["k"]
     assert k["minimum"] == 1 and k["maximum"] == 100      # no unbounded top-k
     assert reg["search_corpus"].input_schema["properties"]["query"]["maxLength"] == 8192
+
+
+def test_mcp_entry_point_defers_to_the_stores_calibration():
+    """The MCP path must not invent an override (audit 2026-09-26). With no operator
+    setting, the floor comes from the store's calibration record; only an explicit
+    CAIRN_SUPPORT_THRESHOLD is an override, and only then may a record say so."""
+    import inspect
+
+    from cairn.mcp_server import build_server, threshold_from_env
+
+    assert threshold_from_env({}) is None
+    assert threshold_from_env({"CAIRN_SUPPORT_THRESHOLD": "  "}) is None
+    assert threshold_from_env({"CAIRN_SUPPORT_THRESHOLD": "7.5"}) == 7.5
+    # The default must be None, never a constant: a constant here is exactly the bug.
+    assert inspect.signature(build_server).parameters["support_threshold"].default is None
+
+
+def test_no_override_means_no_override_stamp(tmp_path):
+    """The stamp "EXPLICIT OVERRIDE … supplied by the caller" is a statement of fact in
+    every audit entry. With no caller-supplied floor it must not appear."""
+    import json
+
+    reg = default_registry(STORE, tmp_path / "a.jsonl")
+    reg["check_support"].handler({"query": "What were total net sales?"})
+    entry = json.loads((tmp_path / "a.jsonl").read_text().strip().splitlines()[-1])
+    assert "EXPLICIT OVERRIDE" not in json.dumps(entry)

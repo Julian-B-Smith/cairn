@@ -382,3 +382,4 @@ API-wrapped service with **inline entailment-gating** (the structural-intercepti
 - 2026-08-26 · D85 · README console tour with eight screenshots over a public Apple patent; locator chip now renders.
 - 2026-08-26 · D86 · ambiguity ids carry position; two marks disputing one pair are two questions.
 - 2026-09-09 · D87 · figure_guess and element_phrase rulings feed back; one text-side seam (`reviewed_numerals`) for every consumer.
+- 2026-09-26 · D88 · MCP entry point defers to the store's calibration; the false "caller override" stamp is gone.
