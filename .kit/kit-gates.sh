@@ -19,10 +19,145 @@
 # Project-owned code lives in ./verify, which sources this file. Put project
 # test commands THERE, never here.
 
+# --- tree fingerprint (kit 2.9.0, horde brief hypersaw-009) ------------------
+# One hash for the working tree AS CONTENT: tracked files, new files that are
+# not ignored, and deletions. `record` stores it and `.kit/stop-gate.sh`
+# recomputes it, so "is this the tree verify judged?" is an exact comparison.
+# Why not the commit hash: agents verify and THEN commit, so the record names
+# the parent commit while the bytes are exactly what was verified. Why not file
+# times (horde's first fix): a deleted file has none, and an edit reverted to
+# the verified bytes would still block.
+#
+#   kit_tree_hash [manifest-file]    prints the hash; optionally writes the
+#                                    path list it hashed, for naming changes
+#
+# Everything happens in a throwaway index AND a throwaway object store with
+# the real store as an alternate, so nothing is written under .git: an
+# untracked 300 MB render would otherwise be copied into .git/objects on every
+# Stop. Runs from the repo root whatever the caller's directory is.
+# Limits, stated: a submodule contributes its commit, not its dirty files; a
+# file marked assume-unchanged or outside a sparse checkout is not seen.
+kit_tree_hash() {
+  local manifest="${1:-}"
+  case "$manifest" in ''|/*) ;; *) manifest="$PWD/$manifest" ;; esac
+  (
+    top=$(git rev-parse --show-toplevel 2>/dev/null) && cd "$top" || exit 1
+    real=$(git rev-parse --git-path index) || exit 1
+    objs=$(cd "$(git rev-parse --git-path objects)" 2>/dev/null && pwd) || exit 1
+    tmp=$(mktemp -d "${TMPDIR:-/tmp}/kit-tree.XXXXXX") || exit 1
+    trap 'rm -rf "$tmp"' EXIT
+    mkdir "$tmp/objects" || exit 1
+    # Start from a copy of the real index to keep git's stat cache (this then
+    # costs about what `git status` does). No copy = a fresh, empty index.
+    # `-p` is load-bearing (kit 2.9.1, horde report hypersaw-014): git trusts a
+    # file's recorded size and time only if the entry is OLDER than the index
+    # file itself, and re-reads by content otherwise ("racy git"). A plain `cp`
+    # stamps the copy with the current time, which is later than every entry,
+    # so a same-size edit made in the same second git recorded the file was
+    # never opened: 20 of 20 such edits passed the gate. Keeping the index's
+    # own time puts git's protection back.
+    [ -f "$real" ] && cp -p "$real" "$tmp/index"
+    excl=(':(exclude).harness' ':(exclude).kit-currency-plant-*' ':(exclude,glob)**/.DS_Store')
+    # A relative HARNESS_DIR is verify's own state wherever it lives. An
+    # absolute one is outside the tree, and naming it would be a fatal pathspec.
+    case "${HARNESS_DIR:-.harness}" in /*|.harness) ;; *) excl+=(":(exclude)${HARNESS_DIR}") ;; esac
+    export GIT_INDEX_FILE="$tmp/index" GIT_OBJECT_DIRECTORY="$tmp/objects" \
+           GIT_ALTERNATE_OBJECT_DIRECTORIES="$objs"
+    # --ignore-errors: one unreadable file must not silently drop the REST of
+    # the tree from the hash. A fatal status (128+) means git added nothing,
+    # and a hash of the old index would be a fingerprint of the wrong thing.
+    # (`|| addrc=$?` so a caller's `set -e` does not end this subshell on the
+    # non-fatal status 1 that --ignore-errors returns.)
+    addrc=0
+    git add -A --ignore-errors -- . "${excl[@]}" >/dev/null 2>&1 || addrc=$?
+    [ "$addrc" -ge 128 ] && exit 1
+    # A nested repository that is not a registered submodule is somebody else's
+    # tree: an agent worktree under `.claude/worktrees/`, a vendored checkout.
+    # `git add -A` records it as one entry holding its HEAD commit, so creating
+    # a worktree, or any commit inside one, would change THIS tree's hash and
+    # block the lead for a sub-agent's work (measured 2026-10-10). Drop every
+    # such entry the real index does not already carry. awk, not sed: `\t` in a
+    # sed pattern is a GNU-ism.
+    git -c core.quotepath=off ls-files -s 2>/dev/null | awk -F'\t' '/^160000 /{print $2}' | while IFS= read -r p; do
+      GIT_INDEX_FILE="$real" git ls-files -s -- "$p" 2>/dev/null | grep -q '^160000 ' \
+        || git update-index --force-remove -- "$p" >/dev/null 2>&1
+    done
+    [ -n "$manifest" ] && git -c core.quotepath=off ls-files -s > "$manifest" 2>/dev/null
+    git write-tree 2>/dev/null
+  )
+}
+
+# --- verify receipt (kit 2.9.0, horde brief hypersaw-010 P1) -----------------
+# `record` used to write target, exit, commit and time, so a gate that skipped
+# and a gate that judged zero cases left the same green record as one that ran
+# (horde: a parity gate exiting 0 on "0/0 scenarios"; a sanitize job judging 47
+# of 74 oracles). Wrap a gate to make the record say what it actually did:
+#
+#   gate <name> <command…>                 ran | skipped | failed
+#   gate --min-cases N <name> <command…>   also fails if it judged fewer than N
+#
+# The wrapped command reports through two optional lines on its output:
+#   KIT-GATE skipped: <reason>     it exited 0 without judging (no compiler…)
+#   KIT-GATE cases=<n>             how many cases it judged
+# A reported count always meets the floor or fails, skip line or not; a gate
+# with a floor that reports nothing and does not skip fails too.
+# Opt-in per gate; an unwrapped gate behaves exactly as before.
+#
+# The command runs in THIS shell with its output sent to a file and printed
+# when it ends (stderr folded into stdout). Not a pipe to `tee`: a pipe put
+# the command in a subshell (a function gate lost its variables), hung until
+# any background child let go of stdout, and under `set -e -o pipefail` could
+# end the caller before the receipt line was written. The price is that a long
+# gate's output appears when it finishes.
+# One receipt file per verify PROCESS ($$), because a currency probe may run
+# this repo's verify concurrently. Limit: a gate called from a child SCRIPT
+# has another $$ and is not in the parent's receipt.
+rm -f "${HARNESS_DIR:-.harness}/receipt.$$.tmp" "${HARNESS_DIR:-.harness}/receipt.$$.start" 2>/dev/null
+gate() {
+  local min="" name out rc skip cases result hd="${HARNESS_DIR:-.harness}"
+  if [ "${1:-}" = "--min-cases" ]; then min="$2"; shift 2; fi
+  name=$(printf '%s' "$1" | LC_ALL=C tr -c 'A-Za-z0-9._:-' '_' | cut -c1-80); shift
+  mkdir -p "$hd"
+  # The tree as it stood when the first gate started. `record` stores it, so a
+  # reader can see a tree that changed WHILE verify ran: the record would
+  # otherwise bless bytes no gate judged.
+  [ -f "$hd/receipt.$$.start" ] || kit_tree_hash > "$hd/receipt.$$.start" 2>/dev/null || true
+  out=$(mktemp "${TMPDIR:-/tmp}/kit-gate.XXXXXX") || { "$@"; return $?; }
+  "$@" > "$out" 2>&1 && rc=0 || rc=$?
+  cat "$out"
+  # Printable ASCII only: a tab, a CR from a CRLF tool or a colour code in the
+  # reason would make the record invalid JSON, and an unreadable record is red.
+  skip=$(sed -n 's/^KIT-GATE skipped:* *//p' "$out" | head -1 | LC_ALL=C tr -cd ' -~' | tr -d '"\\' | cut -c1-120)
+  cases=$(sed -n 's/^KIT-GATE cases=\([0-9]\{1,9\}\).*/\1/p' "$out" | tail -1)
+  [ -n "$cases" ] && cases=$((10#$cases))      # "007" is not a JSON number
+  rm -f "$out"
+  if [ "$rc" != 0 ]; then result=failed
+  elif [ -n "$min" ] && [ -n "$cases" ] && [ "$cases" -lt "$min" ]; then result=short
+  elif [ -n "$skip" ]; then result=skipped
+  elif [ -n "$min" ] && [ -z "$cases" ]; then result=short
+  else result=ran
+  fi
+  if [ "$result" = short ]; then
+    echo "verify: gate $name judged ${cases:-no counted} cases; its floor is $min" >&2
+    result=failed; rc=1
+  fi
+  printf '{"name":"%s","result":"%s"%s%s}\n' "$name" "$result" \
+    "${cases:+,\"cases\":$cases}" "${skip:+,\"reason\":\"$skip\"}" >> "$hd/receipt.$$.tmp"
+  return "$rc"
+}
+
 record() { # record <target> <exit_code>
-  local git_hash; git_hash=$(git rev-parse --short HEAD 2>/dev/null || echo "no-git")
-  printf '{"target":"%s","exit":%d,"git":"%s","ts":"%s"}\n' \
-    "$1" "$2" "$git_hash" "$(date -u +%FT%TZ)" > "$HARNESS_DIR/last-verify.json"
+  local git_hash tree start="" gates="" rf="$HARNESS_DIR/receipt.$$.tmp" sf="$HARNESS_DIR/receipt.$$.start"
+  git_hash=$(git rev-parse --short HEAD 2>/dev/null || echo "no-git")
+  # The path list beside the hash lets the Stop gate NAME what changed without
+  # keeping any object in .git. A failed fingerprint is stored as "", which the
+  # gate reads as "never verified": unknown is never read as verified.
+  tree=$(kit_tree_hash "$HARNESS_DIR/last-verify.tree" 2>/dev/null | grep -E '^[0-9a-f]{40,64}$' || true)
+  [ -n "$tree" ] || rm -f "$HARNESS_DIR/last-verify.tree"
+  [ -f "$sf" ] && start=$(grep -E '^[0-9a-f]{40,64}$' "$sf" || true); rm -f "$sf"
+  [ -f "$rf" ] && gates=$(paste -sd, "$rf") && rm -f "$rf"
+  printf '{"target":"%s","exit":%d,"git":"%s","ts":"%s","tree":"%s","tree_start":"%s","gates":[%s]}\n' \
+    "$1" "$2" "$git_hash" "$(date -u +%FT%TZ)" "$tree" "$start" "$gates" > "$HARNESS_DIR/last-verify.json"
   rm -f "$HARNESS_DIR/dirty"
   return "$2"
 }
@@ -87,8 +222,14 @@ leak_gate() {
   # purpose — this gate greps itself, and a literal here matches itself
   # (spectral-morph-001 found exactly that trap). Kept byte-identical to
   # autonomous/verify and governor/leak_scan.py: three detectors, one policy.
-  hits=$(git grep --untracked -nIE '/(Users|home)/[^/]+/|[A-Za-z]:\\+Users\\+[^\\]' -- . "${excludes[@]}" 2>/dev/null \
-         | grep -vE '/(Users|home)/[<$@{%]|[A-Za-z]:\\+Users\\+[<$@{%]' || true)
+  # Third alternative (kit 2.7.0, horde brief hypersaw-004): the DASH-encoded
+  # home path Claude Code uses for session and project folders, where every
+  # slash became a dash. An agent quoting its scratchpad path writes the
+  # username into tracked text in that form, and the slash patterns above
+  # cannot see it. Anchored to a path or word boundary so ordinary hyphenated
+  # prose does not match; placeholders (`<user>`, `$USER`, ...) still pass.
+  hits=$(git grep --untracked -nIE '/(Users|home)/[^/]+/|[A-Za-z]:\\+Users\\+[^\\]|(^|[/[:space:](=])-(Users|home)-[^-/[:space:]]+-' -- . "${excludes[@]}" 2>/dev/null \
+         | grep -vE '/(Users|home)/[<$@{%]|[A-Za-z]:\\+Users\\+[<$@{%]|-(Users|home)-[<$@{%]' || true)
   [ -z "$hits" ] && return 0
   echo "verify: LEAK — machine-absolute path in a tracked file (use ~/ instead):" >&2
   echo "$hits" | sed 's/^/    /' >&2
@@ -113,5 +254,48 @@ kit_integrity() {
     got=$(shasum -a 256 ".kit/$f" 2>/dev/null | cut -d' ' -f1)
     [ "$got" = "$want" ] || { echo "verify: .kit/$f was edited — it is kit-owned. Re-run kit_sync.py" >&2; bad=1; }
   done < "$man"
+  contract_check || bad=1
   return "$bad"
+}
+
+# --- contract check (kit-core, K6 — Decisions 43, 82, 86) -------------------
+# A composite's contract must declare `contract-version:`; without it no
+# version event exists and consumers have nothing to pin (INTEGRATIONS rule 4).
+# Same question as kit/gates/contract_gate.py, which predates vendoring and so
+# only ran where a repo wired it by hand. WHY IT RIDES kit_integrity: every
+# ./verify already calls that by name, and a new top-level function would run
+# only after 70 project-owned verify files were edited to call it — the
+# distribution gap K6 exists to close. Inert without `composite.contract`.
+# MODE: every new gate enters observing (Decision 84) — it prints the line it
+# would fail on and never changes the exit code. It moves to `deny` only by a
+# kit release carrying a signed GATE-CHANGE decision. Python is passed with
+# -c, not a heredoc: macOS bash 3.2 misparses heredocs inside $( ).
+KIT_CONTRACT_MODE="${KIT_CONTRACT_MODE:-observe}"
+_KIT_CONTRACT_PY='
+import json, os, re, sys
+try:
+    mf = json.load(open("project.manifest.json", encoding="utf-8"))
+except Exception:
+    sys.exit(0)
+c = (mf.get("composite") or {}).get("contract")
+if not c:
+    sys.exit(0)
+if not os.path.isfile(c):
+    print("manifest names " + c + " as the contract, but that file does not exist")
+    sys.exit(1)
+if not re.search(r"^contract-version:\s*\S+", open(c, encoding="utf-8", errors="ignore").read(), re.M):
+    print(c + " declares no contract-version: line, so consumers have nothing to pin (INTEGRATIONS rule 4)")
+    sys.exit(1)
+'
+contract_check() {
+  [ -f project.manifest.json ] || return 0
+  command -v python3 >/dev/null 2>&1 || { echo "verify: contract check skipped (no python3)" >&2; return 0; }
+  local msg
+  msg=$(python3 -c "$_KIT_CONTRACT_PY") && return 0
+  if [ "$KIT_CONTRACT_MODE" = deny ]; then
+    echo "verify: contract: $msg" >&2
+    return 1
+  fi
+  echo "verify: contract (observe: would fail, not blocking): $msg" >&2
+  return 0
 }
